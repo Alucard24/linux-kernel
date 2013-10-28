@@ -467,7 +467,6 @@ static struct scatterlist *create_bounce_buffer(struct scatterlist *sgl,
 	if (!bounce_sgl)
 		return NULL;
 
-	sg_init_table(bounce_sgl, num_pages);
 	for (i = 0; i < num_pages; i++) {
 		page_buf = alloc_page(GFP_ATOMIC);
 		if (!page_buf)
@@ -786,12 +785,22 @@ static void storvsc_command_completion(struct storvsc_cmd_request *cmd_request)
 	/*
 	 * If there is an error; offline the device since all
 	 * error recovery strategies would have already been
-	 * deployed on the host side.
+	 * deployed on the host side. However, if the command
+	 * were a pass-through command deal with it appropriately.
 	 */
-	if (vm_srb->srb_status == SRB_STATUS_ERROR)
-		scmnd->result = DID_TARGET_FAILURE << 16;
-	else
-		scmnd->result = vm_srb->scsi_status;
+	scmnd->result = vm_srb->scsi_status;
+
+	if (vm_srb->srb_status == SRB_STATUS_ERROR) {
+		switch (scmnd->cmnd[0]) {
+		case ATA_16:
+		case ATA_12:
+			set_host_byte(scmnd, DID_PASSTHROUGH);
+			break;
+		default:
+			set_host_byte(scmnd, DID_TARGET_FAILURE);
+		}
+	}
+
 
 	/*
 	 * If the LUN is invalid; remove the device.
@@ -1212,12 +1221,7 @@ static int storvsc_host_reset_handler(struct scsi_cmnd *scmnd)
 	/*
 	 * At this point, all outstanding requests in the adapter
 	 * should have been flushed out and return to us
-	 * There is a potential race here where the host may be in
-	 * the process of responding when we return from here.
-	 * Just wait for all in-transit packets to be accounted for
-	 * before we return from here.
 	 */
-	storvsc_wait_to_drain(stor_device);
 
 	return SUCCESS;
 }

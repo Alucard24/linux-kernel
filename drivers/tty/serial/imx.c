@@ -47,6 +47,7 @@
 #include <linux/slab.h>
 #include <linux/of.h>
 #include <linux/of_device.h>
+#include <linux/pinctrl/consumer.h>
 
 #include <asm/io.h>
 #include <asm/irq.h>
@@ -204,7 +205,8 @@ struct imx_port {
 	unsigned int		irda_inv_rx:1;
 	unsigned int		irda_inv_tx:1;
 	unsigned short		trcv_delay; /* transceiver delay */
-	struct clk		*clk;
+	struct clk		*clk_ipg;
+	struct clk		*clk_per;
 	struct imx_uart_data	*devdata;
 };
 
@@ -672,7 +674,7 @@ static int imx_setup_ufcr(struct imx_port *sport, unsigned int mode)
 	 * RFDIV is set such way to satisfy requested uartclk value
 	 */
 	val = TXTL << 10 | RXTL;
-	ufcr_rfdiv = (clk_get_rate(sport->clk) + sport->port.uartclk / 2)
+	ufcr_rfdiv = (clk_get_rate(sport->clk_per) + sport->port.uartclk / 2)
 			/ sport->port.uartclk;
 
 	if(!ufcr_rfdiv)
@@ -756,7 +758,6 @@ static int imx_startup(struct uart_port *port)
 		}
 	}
 
-	spin_lock_irqsave(&sport->port.lock, flags);
 	/*
 	 * Finally, clear and enable interrupts
 	 */
@@ -810,6 +811,7 @@ static int imx_startup(struct uart_port *port)
 	/*
 	 * Enable modem status interrupts
 	 */
+	spin_lock_irqsave(&sport->port.lock,flags);
 	imx_enable_ms(&sport->port);
 	spin_unlock_irqrestore(&sport->port.lock,flags);
 
@@ -839,13 +841,10 @@ static void imx_shutdown(struct uart_port *port)
 {
 	struct imx_port *sport = (struct imx_port *)port;
 	unsigned long temp;
-	unsigned long flags;
 
-	spin_lock_irqsave(&sport->port.lock, flags);
 	temp = readl(sport->port.membase + UCR2);
 	temp &= ~(UCR2_TXEN);
 	writel(temp, sport->port.membase + UCR2);
-	spin_unlock_irqrestore(&sport->port.lock, flags);
 
 	if (USE_IRDA(sport)) {
 		struct imxuart_platform_data *pdata;
@@ -874,14 +873,12 @@ static void imx_shutdown(struct uart_port *port)
 	 * Disable all interrupts, port and break condition.
 	 */
 
-	spin_lock_irqsave(&sport->port.lock, flags);
 	temp = readl(sport->port.membase + UCR1);
 	temp &= ~(UCR1_TXMPTYEN | UCR1_RRDYEN | UCR1_RTSDEN | UCR1_UARTEN);
 	if (USE_IRDA(sport))
 		temp &= ~(UCR1_IREN);
 
 	writel(temp, sport->port.membase + UCR1);
-	spin_unlock_irqrestore(&sport->port.lock, flags);
 }
 
 static void
@@ -1224,9 +1221,6 @@ imx_console_write(struct console *co, const char *s, unsigned int count)
 	struct imx_port *sport = imx_ports[co->index];
 	struct imx_port_ucrs old_ucr;
 	unsigned int ucr1;
-	unsigned long flags;
-
-	spin_lock_irqsave(&sport->port.lock, flags);
 
 	/*
 	 *	First, save UCR1/2/3 and then disable interrupts
@@ -1252,8 +1246,6 @@ imx_console_write(struct console *co, const char *s, unsigned int count)
 	while (!(readl(sport->port.membase + USR2) & USR2_TXDC));
 
 	imx_port_ucrs_restore(&sport->port, &old_ucr);
-
-	spin_unlock_irqrestore(&sport->port.lock, flags);
 }
 
 /*
@@ -1295,7 +1287,7 @@ imx_console_get_options(struct imx_port *sport, int *baud,
 		else
 			ucfr_rfdiv = 6 - ucfr_rfdiv;
 
-		uartclk = clk_get_rate(sport->clk);
+		uartclk = clk_get_rate(sport->clk_per);
 		uartclk /= ucfr_rfdiv;
 
 		{	/*
@@ -1474,6 +1466,7 @@ static int serial_imx_probe(struct platform_device *pdev)
 	void __iomem *base;
 	int ret = 0;
 	struct resource *res;
+	struct pinctrl *pinctrl;
 
 	sport = kzalloc(sizeof(*sport), GFP_KERNEL);
 	if (!sport)
@@ -1513,14 +1506,28 @@ static int serial_imx_probe(struct platform_device *pdev)
 	sport->timer.function = imx_timeout;
 	sport->timer.data     = (unsigned long)sport;
 
-	sport->clk = clk_get(&pdev->dev, "uart");
-	if (IS_ERR(sport->clk)) {
-		ret = PTR_ERR(sport->clk);
+	pinctrl = devm_pinctrl_get_select_default(&pdev->dev);
+	if (IS_ERR(pinctrl)) {
+		ret = PTR_ERR(pinctrl);
 		goto unmap;
 	}
-	clk_prepare_enable(sport->clk);
 
-	sport->port.uartclk = clk_get_rate(sport->clk);
+	sport->clk_ipg = devm_clk_get(&pdev->dev, "ipg");
+	if (IS_ERR(sport->clk_ipg)) {
+		ret = PTR_ERR(sport->clk_ipg);
+		goto unmap;
+	}
+
+	sport->clk_per = devm_clk_get(&pdev->dev, "per");
+	if (IS_ERR(sport->clk_per)) {
+		ret = PTR_ERR(sport->clk_per);
+		goto unmap;
+	}
+
+	clk_prepare_enable(sport->clk_per);
+	clk_prepare_enable(sport->clk_ipg);
+
+	sport->port.uartclk = clk_get_rate(sport->clk_per);
 
 	imx_ports[sport->port.line] = sport;
 
@@ -1541,8 +1548,8 @@ deinit:
 	if (pdata && pdata->exit)
 		pdata->exit(pdev);
 clkput:
-	clk_disable_unprepare(sport->clk);
-	clk_put(sport->clk);
+	clk_disable_unprepare(sport->clk_per);
+	clk_disable_unprepare(sport->clk_ipg);
 unmap:
 	iounmap(sport->port.membase);
 free:
@@ -1560,11 +1567,10 @@ static int serial_imx_remove(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, NULL);
 
-	if (sport) {
-		uart_remove_one_port(&imx_reg, &sport->port);
-		clk_disable_unprepare(sport->clk);
-		clk_put(sport->clk);
-	}
+	uart_remove_one_port(&imx_reg, &sport->port);
+
+	clk_disable_unprepare(sport->clk_per);
+	clk_disable_unprepare(sport->clk_ipg);
 
 	if (pdata && pdata->exit)
 		pdata->exit(pdev);

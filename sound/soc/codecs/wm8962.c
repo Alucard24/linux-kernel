@@ -1478,7 +1478,8 @@ static const DECLARE_TLV_DB_SCALE(eq_tlv, -1200, 100, 0);
 
 static int wm8962_dsp2_write_config(struct snd_soc_codec *codec)
 {
-	return 0;
+	return regcache_sync_region(codec->control_data,
+				    WM8962_HDBASS_AI_1, WM8962_MAX_REGISTER);
 }
 
 static int wm8962_dsp2_set_enable(struct snd_soc_codec *codec, u16 val)
@@ -1599,6 +1600,7 @@ static int wm8962_put_hp_sw(struct snd_kcontrol *kcontrol,
 			    struct snd_ctl_elem_value *ucontrol)
 {
 	struct snd_soc_codec *codec = snd_kcontrol_chip(kcontrol);
+	u16 *reg_cache = codec->reg_cache;
 	int ret;
 
 	/* Apply the update (if any) */
@@ -1607,19 +1609,16 @@ static int wm8962_put_hp_sw(struct snd_kcontrol *kcontrol,
 		return 0;
 
 	/* If the left PGA is enabled hit that VU bit... */
-	ret = snd_soc_read(codec, WM8962_PWR_MGMT_2);
-	if (ret & WM8962_HPOUTL_PGA_ENA) {
-		snd_soc_write(codec, WM8962_HPOUTL_VOLUME,
-			      snd_soc_read(codec, WM8962_HPOUTL_VOLUME));
-		return 1;
-	}
+	if (snd_soc_read(codec, WM8962_PWR_MGMT_2) & WM8962_HPOUTL_PGA_ENA)
+		return snd_soc_write(codec, WM8962_HPOUTL_VOLUME,
+				     reg_cache[WM8962_HPOUTL_VOLUME]);
 
 	/* ...otherwise the right.  The VU is stereo. */
-	if (ret & WM8962_HPOUTR_PGA_ENA)
-		snd_soc_write(codec, WM8962_HPOUTR_VOLUME,
-			      snd_soc_read(codec, WM8962_HPOUTR_VOLUME));
+	if (snd_soc_read(codec, WM8962_PWR_MGMT_2) & WM8962_HPOUTR_PGA_ENA)
+		return snd_soc_write(codec, WM8962_HPOUTR_VOLUME,
+				     reg_cache[WM8962_HPOUTR_VOLUME]);
 
-	return 1;
+	return 0;
 }
 
 /* The VU bits for the speakers are in a different register to the mute
@@ -1757,10 +1756,22 @@ SOC_DOUBLE_R_TLV("EQ4 Volume", WM8962_EQ3, WM8962_EQ23,
 SOC_DOUBLE_R_TLV("EQ5 Volume", WM8962_EQ3, WM8962_EQ23,
 		 WM8962_EQL_B5_GAIN_SHIFT, 31, 0, eq_tlv),
 
+SOC_SINGLE("3D Switch", WM8962_THREED1, 0, 1, 0),
+SND_SOC_BYTES_MASK("3D Coefficients", WM8962_THREED1, 4, WM8962_THREED_ENA),
+
+SOC_SINGLE("DF1 Switch", WM8962_DF1, 0, 1, 0),
+SND_SOC_BYTES_MASK("DF1 Coefficients", WM8962_DF1, 7, WM8962_DF1_ENA),
+
+SOC_SINGLE("DRC Switch", WM8962_DRC_1, 0, 1, 0),
+SND_SOC_BYTES_MASK("DRC Coefficients", WM8962_DRC_1, 5, WM8962_DRC_ENA),
+
 WM8962_DSP2_ENABLE("VSS Switch", WM8962_VSS_ENA_SHIFT),
+SND_SOC_BYTES("VSS Coefficients", WM8962_VSS_XHD2_1, 148),
 WM8962_DSP2_ENABLE("HPF1 Switch", WM8962_HPF1_ENA_SHIFT),
 WM8962_DSP2_ENABLE("HPF2 Switch", WM8962_HPF2_ENA_SHIFT),
+SND_SOC_BYTES("HPF Coefficients", WM8962_LHPF2, 1),
 WM8962_DSP2_ENABLE("HD Bass Switch", WM8962_HDBASS_ENA_SHIFT),
+SND_SOC_BYTES("HD Bass Coefficients", WM8962_HDBASS_AI_1, 30),
 };
 
 static const struct snd_kcontrol_new wm8962_spk_mono_controls[] = {
@@ -2490,9 +2501,6 @@ static int wm8962_set_bias_level(struct snd_soc_codec *codec,
 		/* VMID 2*250k */
 		snd_soc_update_bits(codec, WM8962_PWR_MGMT_1,
 				    WM8962_VMID_SEL_MASK, 0x100);
-
-		if (codec->dapm.bias_level == SND_SOC_BIAS_OFF)
-			msleep(100);
 		break;
 
 	case SND_SOC_BIAS_OFF:
@@ -2524,8 +2532,7 @@ static int wm8962_hw_params(struct snd_pcm_substream *substream,
 			    struct snd_pcm_hw_params *params,
 			    struct snd_soc_dai *dai)
 {
-	struct snd_soc_pcm_runtime *rtd = substream->private_data;
-	struct snd_soc_codec *codec = rtd->codec;
+	struct snd_soc_codec *codec = dai->codec;
 	struct wm8962_priv *wm8962 = snd_soc_codec_get_drvdata(codec);
 	int i;
 	int aif0 = 0;
@@ -3365,6 +3372,7 @@ static int wm8962_probe(struct snd_soc_codec *codec)
 	int ret;
 	struct wm8962_priv *wm8962 = snd_soc_codec_get_drvdata(codec);
 	struct wm8962_pdata *pdata = dev_get_platdata(codec->dev);
+	u16 *reg_cache = codec->reg_cache;
 	int i, trigger, irq_pol;
 	bool dmicclk, dmicdat;
 
@@ -3422,9 +3430,8 @@ static int wm8962_probe(struct snd_soc_codec *codec)
 
 		/* Put the speakers into mono mode? */
 		if (pdata->spk_mono)
-			snd_soc_update_bits(codec, WM8962_CLASS_D_CONTROL_2,
-				WM8962_SPK_MONO_MASK, WM8962_SPK_MONO);
-
+			reg_cache[WM8962_CLASS_D_CONTROL_2]
+				|= WM8962_SPK_MONO;
 
 		/* Micbias setup, detection enable and detection
 		 * threasholds. */
@@ -3715,9 +3722,6 @@ static int wm8962_runtime_resume(struct device *dev)
 	}
 
 	regcache_cache_only(wm8962->regmap, false);
-
-	wm8962_reset(wm8962);
-
 	regcache_sync(wm8962->regmap);
 
 	regmap_update_bits(wm8962->regmap, WM8962_ANTI_POP,

@@ -627,6 +627,7 @@ static const struct ethtool_ops ethtool_ops = {
 	.get_link = ethtool_op_get_link,
 	.get_coalesce = emac_get_coalesce,
 	.set_coalesce =  emac_set_coalesce,
+	.get_ts_info = ethtool_op_get_ts_info,
 };
 
 /**
@@ -1052,7 +1053,7 @@ static void emac_tx_handler(void *token, int len, int status)
 	atomic_dec(&priv->cur_tx);
 
 	if (unlikely(netif_queue_stopped(ndev)))
-		netif_wake_queue(ndev);
+		netif_start_queue(ndev);
 	ndev->stats.tx_packets++;
 	ndev->stats.tx_bytes += len;
 	dev_kfree_skb_any(skb);

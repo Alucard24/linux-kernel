@@ -855,10 +855,11 @@ void disassociate_ctty(int on_exit)
  */
 void no_tty(void)
 {
+	/* FIXME: Review locking here. The tty_lock never covered any race
+	   between a new association and proc_clear_tty but possible we need
+	   to protect against this anyway */
 	struct task_struct *tsk = current;
-	tty_lock();
 	disassociate_ctty(0);
-	tty_unlock();
 	proc_clear_tty(tsk);
 }
 
@@ -938,14 +939,6 @@ void start_tty(struct tty_struct *tty)
 
 EXPORT_SYMBOL(start_tty);
 
-/* We limit tty time update visibility to every 8 seconds or so. */
-static void tty_update_time(struct timespec *time)
-{
-	unsigned long sec = get_seconds() & ~7;
-	if ((long)(sec - time->tv_sec) > 0)
-		time->tv_sec = sec;
-}
-
 /**
  *	tty_read	-	read method for tty device files
  *	@file: pointer to tty file
@@ -982,10 +975,8 @@ static ssize_t tty_read(struct file *file, char __user *buf, size_t count,
 	else
 		i = -EIO;
 	tty_ldisc_deref(ld);
-
 	if (i > 0)
-		tty_update_time(&inode->i_atime);
-
+		inode->i_atime = current_fs_time(inode->i_sb);
 	return i;
 }
 
@@ -1088,7 +1079,7 @@ static inline ssize_t do_tty_write(
 	}
 	if (written) {
 		struct inode *inode = file->f_path.dentry->d_inode;
-		tty_update_time(&inode->i_mtime);
+		inode->i_mtime = current_fs_time(inode->i_sb);
 		ret = written;
 	}
 out:
@@ -1810,6 +1801,9 @@ int tty_release(struct inode *inode, struct file *filp)
  *
  *	We cannot return driver and index like for the other nodes because
  *	devpts will not work then. It expects inodes to be from devpts FS.
+ *
+ *	We need to move to returning a refcounted object from all the lookup
+ *	paths including this one.
  */
 static struct tty_struct *tty_open_current_tty(dev_t device, struct file *filp)
 {
@@ -1826,6 +1820,7 @@ static struct tty_struct *tty_open_current_tty(dev_t device, struct file *filp)
 	/* noctty = 1; */
 	tty_kref_put(tty);
 	/* FIXME: we put a reference and return a TTY! */
+	/* This is only safe because the caller holds tty_mutex */
 	return tty;
 }
 

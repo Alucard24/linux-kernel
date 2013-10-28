@@ -618,7 +618,7 @@ struct vnet_port *__tx_port_find(struct vnet *vp, struct sk_buff *skb)
 	struct vnet_port *port;
 
 	hlist_for_each_entry(port, n, hp, hash) {
-		if (!compare_ether_addr(port->raddr, skb->data))
+		if (ether_addr_equal(port->raddr, skb->data))
 			return port;
 	}
 	port = NULL;
@@ -1243,8 +1243,6 @@ static int vnet_port_remove(struct vio_dev *vdev)
 		dev_set_drvdata(&vdev->dev, NULL);
 
 		kfree(port);
-
-		unregister_netdev(vp->dev);
 	}
 	return 0;
 }

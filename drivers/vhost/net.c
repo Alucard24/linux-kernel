@@ -167,7 +167,7 @@ static void handle_tx(struct vhost_net *net)
 	if (wmem < sock->sk->sk_sndbuf / 2)
 		tx_poll_stop(net);
 	hdr_size = vq->vhost_hlen;
-	zcopy = vhost_sock_zcopy(sock);
+	zcopy = vq->ubufs;
 
 	for (;;) {
 		/* Release DMAs done buffers first */
@@ -235,8 +235,7 @@ static void handle_tx(struct vhost_net *net)
 				msg.msg_controllen = 0;
 				ubufs = NULL;
 			} else {
-				struct ubuf_info *ubuf;
-				ubuf = vq->ubuf_info + vq->upend_idx;
+				struct ubuf_info *ubuf = &vq->ubuf_info[head];
 
 				vq->heads[vq->upend_idx].len = len;
 				ubuf->callback = vhost_zerocopy_callback;
@@ -259,7 +258,8 @@ static void handle_tx(struct vhost_net *net)
 					UIO_MAXIOV;
 			}
 			vhost_discard_vq_desc(vq, 1);
-			tx_poll_start(net, sock);
+			if (err == -EAGAIN || err == -ENOBUFS)
+				tx_poll_start(net, sock);
 			break;
 		}
 		if (err != len)
@@ -267,6 +267,8 @@ static void handle_tx(struct vhost_net *net)
 				 " len %d != %zd\n", err, len);
 		if (!zcopy)
 			vhost_add_used_and_signal(&net->dev, vq, head, 0);
+		else
+			vhost_zerocopy_signal_used(vq);
 		total_len += len;
 		if (unlikely(total_len >= VHOST_NET_WEIGHT)) {
 			vhost_poll_queue(&vq->poll);
@@ -377,8 +379,7 @@ static void handle_rx(struct vhost_net *net)
 		.hdr.gso_type = VIRTIO_NET_HDR_GSO_NONE
 	};
 	size_t total_len = 0;
-	int err, mergeable;
-	s16 headcount;
+	int err, headcount, mergeable;
 	size_t vhost_hlen, sock_hlen;
 	size_t vhost_len, sock_len;
 	/* TODO: check that we are running from vhost_worker? */

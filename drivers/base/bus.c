@@ -21,8 +21,7 @@
 #include "power/power.h"
 
 /* /sys/devices/system */
-/* FIXME: make static after drivers/base/sys.c is deleted */
-struct kset *system_kset;
+static struct kset *system_kset;
 
 #define to_bus_attr(_attr) container_of(_attr, struct bus_attribute, attr)
 
@@ -294,7 +293,7 @@ int bus_for_each_dev(struct bus_type *bus, struct device *start,
 	struct device *dev;
 	int error = 0;
 
-	if (!bus || !bus->p)
+	if (!bus)
 		return -EINVAL;
 
 	klist_iter_init_node(&bus->p->klist_devices, &i,
@@ -328,7 +327,7 @@ struct device *bus_find_device(struct bus_type *bus,
 	struct klist_iter i;
 	struct device *dev;
 
-	if (!bus || !bus->p)
+	if (!bus)
 		return NULL;
 
 	klist_iter_init_node(&bus->p->klist_devices, &i,

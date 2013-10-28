@@ -248,6 +248,11 @@ static sctp_xmit_t sctp_packet_bundle_sack(struct sctp_packet *pkt,
 		/* If the SACK timer is running, we have a pending SACK */
 		if (timer_pending(timer)) {
 			struct sctp_chunk *sack;
+
+			if (pkt->transport->sack_generation !=
+			    pkt->transport->asoc->peer.sack_generation)
+				return retval;
+
 			asoc->a_rwnd = asoc->rwnd;
 			sack = sctp_make_sack(asoc);
 			if (sack) {
@@ -334,25 +339,6 @@ finish:
 	return retval;
 }
 
-static void sctp_packet_release_owner(struct sk_buff *skb)
-{
-	sk_free(skb->sk);
-}
-
-static void sctp_packet_set_owner_w(struct sk_buff *skb, struct sock *sk)
-{
-	skb_orphan(skb);
-	skb->sk = sk;
-	skb->destructor = sctp_packet_release_owner;
-
-	/*
-	 * The data chunks have already been accounted for in sctp_sendmsg(),
-	 * therefore only reserve a single byte to keep socket around until
-	 * the packet has been transmitted.
-	 */
-	atomic_inc(&sk->sk_wmem_alloc);
-}
-
 /* All packets are sent to the network through this function from
  * sctp_outq_tail().
  *
@@ -394,7 +380,7 @@ int sctp_packet_transmit(struct sctp_packet *packet)
 	/* Set the owning socket so that we know where to get the
 	 * destination IP address.
 	 */
-	sctp_packet_set_owner_w(nskb, sk);
+	skb_set_owner_w(nskb, sk);
 
 	if (!sctp_transport_dst_check(tp)) {
 		sctp_transport_route(tp, NULL, sctp_sk(sk));
@@ -680,8 +666,8 @@ static sctp_xmit_t sctp_packet_can_append_data(struct sctp_packet *packet,
 	 */
 	if (!sctp_sk(asoc->base.sk)->nodelay && sctp_packet_empty(packet) &&
 	    inflight && sctp_state(asoc, ESTABLISHED)) {
-		unsigned max = transport->pathmtu - packet->overhead;
-		unsigned len = chunk->skb->len + q->out_qlen;
+		unsigned int max = transport->pathmtu - packet->overhead;
+		unsigned int len = chunk->skb->len + q->out_qlen;
 
 		/* Check whether this chunk and all the rest of pending
 		 * data will fit or delay in hopes of bundling a full

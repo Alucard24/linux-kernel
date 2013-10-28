@@ -505,8 +505,7 @@ static int wm8960_hw_params(struct snd_pcm_substream *substream,
 			    struct snd_pcm_hw_params *params,
 			    struct snd_soc_dai *dai)
 {
-	struct snd_soc_pcm_runtime *rtd = substream->private_data;
-	struct snd_soc_codec *codec = rtd->codec;
+	struct snd_soc_codec *codec = dai->codec;
 	struct wm8960_priv *wm8960 = snd_soc_codec_get_drvdata(codec);
 	u16 iface = snd_soc_read(codec, WM8960_IFACE1) & 0xfff3;
 	int i;
@@ -790,9 +789,9 @@ static int wm8960_set_dai_pll(struct snd_soc_dai *codec_dai, int pll_id,
 	if (pll_div.k) {
 		reg |= 0x20;
 
-		snd_soc_write(codec, WM8960_PLL2, (pll_div.k >> 16) & 0xff);
-		snd_soc_write(codec, WM8960_PLL3, (pll_div.k >> 8) & 0xff);
-		snd_soc_write(codec, WM8960_PLL4, pll_div.k & 0xff);
+		snd_soc_write(codec, WM8960_PLL2, (pll_div.k >> 18) & 0x3f);
+		snd_soc_write(codec, WM8960_PLL3, (pll_div.k >> 9) & 0x1ff);
+		snd_soc_write(codec, WM8960_PLL4, pll_div.k & 0x1ff);
 	}
 	snd_soc_write(codec, WM8960_PLL1, reg);
 

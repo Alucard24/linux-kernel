@@ -421,6 +421,12 @@ static void pci_device_shutdown(struct device *dev)
 	pci_msix_shutdown(pci_dev);
 
 	/*
+	 * Turn off Bus Master bit on the device to tell it to not
+	 * continue to do DMA
+	 */
+	pci_disable_device(pci_dev);
+
+	/*
 	 * Devices may be enabled to wake up by runtime PM, but they need not
 	 * be supposed to wake up the system from its "power off" state (e.g.
 	 * ACPI S5).  Therefore disable wakeup for all devices that aren't
@@ -951,13 +957,6 @@ static int pci_pm_poweroff_noirq(struct device *dev)
 
 	if (!pci_dev->state_saved && !pci_is_bridge(pci_dev))
 		pci_prepare_to_sleep(pci_dev);
-
-	/*
-	 * The reason for doing this here is the same as for the analogous code
-	 * in pci_pm_suspend_noirq().
-	 */
-	if (pci_dev->class == PCI_CLASS_SERIAL_USB_EHCI)
-		pci_write_config_word(pci_dev, PCI_COMMAND, 0);
 
 	return 0;
 }
